@@ -2656,23 +2656,27 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-server.listen(PORT, () => console.log(`API BoardVan disponível na porta ${PORT}`));
-const locationMaintenanceTimer = setInterval(async () => {
-  try {
-    await monitorActiveRunLocations();
-    await prisma.vehicleLocationSample.deleteMany({
-      where: { createdAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }
-    });
-  } catch (error) {
-    console.error('Falha na manutenção de localização e alertas:', error);
-  }
-}, 60 * 1000);
-locationMaintenanceTimer.unref();
+module.exports = app;
 
-async function shutdown() {
-  clearInterval(locationMaintenanceTimer);
-  await prisma.$disconnect();
-  server.close();
+if (require.main === module) {
+  server.listen(PORT, () => console.log(`API BoardVan disponível na porta ${PORT}`));
+  const locationMaintenanceTimer = setInterval(async () => {
+    try {
+      await monitorActiveRunLocations();
+      await prisma.vehicleLocationSample.deleteMany({
+        where: { createdAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }
+      });
+    } catch (error) {
+      console.error('Falha na manutenção de localização e alertas:', error);
+    }
+  }, 60 * 1000);
+  locationMaintenanceTimer.unref();
+
+  async function shutdown() {
+    clearInterval(locationMaintenanceTimer);
+    await prisma.$disconnect();
+    server.close();
+  }
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);

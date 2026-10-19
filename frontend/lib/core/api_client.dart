@@ -159,12 +159,12 @@ class ApiClient {
       ),
     };
 
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _apiException(response);
+    }
     final dynamic decoded = response.body.isEmpty
         ? <String, dynamic>{}
         : jsonDecode(response.body);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(_errorMessage(decoded), response.statusCode);
-    }
     return expectJson ? decoded : <String, dynamic>{};
   }
 
