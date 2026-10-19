@@ -30,9 +30,8 @@ class ApiClient {
       return _configuredBaseUrl;
     }
     if (kReleaseMode) {
-      throw StateError(
-        'Defina API_BASE_URL HTTPS ao compilar a versão de produção.',
-      );
+      return 'https://van-board.vercel.app';
+      
     }
     if (kIsWeb) return 'http://localhost:3333';
     if (defaultTargetPlatform == TargetPlatform.android) {
