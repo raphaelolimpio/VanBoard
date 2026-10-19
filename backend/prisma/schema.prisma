@@ -1,0 +1,517 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BillingType {
+  MENSAL
+  POR_VIAGEM
+}
+
+enum TripDirection {
+  IDA // Apenas foi para a escola (1 viagem)
+  VOLTA // Apenas retornou da escola (1 viagem)
+  IDA_E_VOLTA // Foi e voltou no dia (2 viagens)
+}
+
+enum CheckInMethod {
+  QRCODE
+  MANUAL_MOTORISTA
+}
+
+// ==========================================
+// ENUMS (Status e Categorias Padronizadas)
+// ==========================================
+
+enum VehicleStatus {
+  PARADO
+  RODANDO
+  MANUTENCAO
+  DANIFICADA
+}
+
+enum VehiclePurpose {
+  ESCOLAR
+  TURISMO
+  EVENTOS
+}
+
+enum DriverStatus {
+  DISPONIVEL
+  EM_VIAGEM
+  FOLGA
+  AFASTADO
+}
+
+enum TransactionType {
+  RECEITA
+  DESPESA
+}
+
+enum Shift {
+  MANHA
+  TARDE
+  NOITE
+  INTEGRAL
+}
+
+enum TripStatus {
+  ORCAMENTO
+  AGENDADO
+  EM_ANDAMENTO
+  CONCLUIDO
+  CANCELADO
+}
+
+enum ServiceRunStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum EmergencyStatus {
+  OPEN
+  ACCEPTED
+  RESOLVED
+  CANCELLED
+}
+
+enum EmergencyOfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+enum PassengerStatus {
+  AGUARDANDO
+  EMBARCADO
+  DESEMBARCADO
+  AUSENTE
+}
+
+// ==========================================
+// ENTIDADES CENTRAIS (Multi-Empresa e Frota)
+// ==========================================
+
+model Owner {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  companies    Company[]
+  createdAt    DateTime  @default(now())
+}
+
+model Company {
+  id      String  @id @default(uuid())
+  name    String // Nome Fantasia / Razão Social
+  cnpj    String? @unique
+  ownerId String
+  owner   Owner   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  vehicles      Vehicle[]
+  drivers       Driver[]
+  students      Student[]
+  trips         CharterTrip[]
+  transactions  FinancialTransaction[]
+  serviceRuns   ServiceRun[]
+  emergencies   EmergencyRequest[]
+  driverInvites DriverInvite[]
+  vehicleAlerts VehicleAlert[]
+
+  createdAt DateTime @default(now())
+}
+
+model Driver {
+  id           String       @id @default(uuid())
+  companyId    String
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name         String
+  cnh          String
+  cnhCategory  String       @default("D")
+  phone        String
+  email        String?      @unique
+  passwordHash String?
+  active       Boolean      @default(true)
+  status       DriverStatus @default(DISPONIVEL)
+
+  vehicles    Vehicle[] // Vans em que ele é o motorista titular/fixo
+  trips       CharterTrip[] // Viagens de turismo/eventos em que foi escalado
+  serviceRuns ServiceRun[]
+  invitations DriverInvite[]
+  inspections VehicleInspection[]
+  createdAt   DateTime            @default(now())
+}
+
+model Vehicle {
+  id        String  @id @default(uuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  plate       String  @unique
+  model       String // Ex: Sprinter 416, Master, Ducato
+  year        Int?
+  capacity    Int // Lotação máxima de passageiros
+  description String?
+
+  status   VehicleStatus    @default(PARADO)
+  purposes VehiclePurpose[] // Ex: [ESCOLAR] ou [TURISMO, EVENTOS]
+
+  defaultDriverId String?
+  defaultDriver   Driver? @relation(fields: [defaultDriverId], references: [id], onDelete: SetNull)
+
+  // Relacionamentos operacionais
+  students                Student[]
+  schoolRoutes            SchoolRoute[]
+  trips                   CharterTrip[]
+  transactions            FinancialTransaction[]
+  serviceRuns             ServiceRun[]
+  location                VehicleLocation?
+  emergencyOffers         EmergencyOffer[]
+  brokenEmergencyRequests EmergencyRequest[]      @relation("BrokenVehicle")
+  runAssignments          StudentRunAssignment[]
+  documents               VehicleDocument[]
+  inspections             VehicleInspection[]
+  locationSamples         VehicleLocationSample[]
+  alerts                  VehicleAlert[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==========================================
+// MÓDULO 1: TRANSPORTE ESCOLAR
+// ==========================================
+
+model Student {
+  id          String   @id @default(uuid())
+  readingCode String?  @unique @default(cuid()) // ID de leitura único do aluno
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicleId   String?
+  vehicle     Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+
+  name            String
+  guardian        String // Nome do responsável financeiro
+  phone           String // Telefone reconhecido no check-in por QR Code
+  hasCellphone    Boolean @default(true) // false = crianças pequenas (chamada manual pelo motorista)
+  pickupAddr      String // Endereço de embarque
+  pickupLatitude  Float?
+  pickupLongitude Float?
+  schoolName      String // Escola de destino
+  shift           Shift
+
+  // Regras de Contrato: Mensal vs Pacote de Viagens (Créditos)
+  billingType  BillingType @default(MENSAL)
+  monthlyFee   Decimal?    @db.Decimal(10, 2) // Usado se for MENSAL
+  dueDay       Int? // Dia de vencimento se for MENSAL
+  pricePerTrip Decimal?    @db.Decimal(10, 2) // Valor unitário da viagem se for POR_VIAGEM
+  tripCredits  Int         @default(0) // Saldo de viagens compradas (vai diminuindo conforme usa)
+
+  active            Boolean                @default(true)
+  attendances       StudentAttendance[] // Histórico no calendário (dias que foi/voltou)
+  runAssignments    StudentRunAssignment[]
+  trackingGrants    StudentTrackingGrant[]
+  emergencyRequests EmergencyRequest[]
+  createdAt         DateTime               @default(now())
+}
+
+model StudentAttendance {
+  id           String        @id @default(uuid())
+  studentId    String
+  student      Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  vehicleId    String
+  serviceRunId String?
+  serviceRun   ServiceRun?   @relation(fields: [serviceRunId], references: [id], onDelete: SetNull)
+  date         DateTime      @default(now()) // Data salva no calendário
+  direction    TripDirection // IDA, VOLTA ou IDA_E_VOLTA
+  method       CheckInMethod // QRCODE (lido pelo celular) ou MANUAL_MOTORISTA (lista de chamada)
+  creditsUsed  Int           @default(1) // Quantos créditos descontou (1 para Ida ou Volta, 2 para Ida e Volta)
+
+  @@unique([serviceRunId, studentId, direction])
+}
+
+model SchoolRoute {
+  id              String       @id @default(uuid())
+  vehicleId       String
+  vehicle         Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  name            String
+  shift           Shift
+  startTime       String
+  endTime         String
+  stopsOrder      Json?
+  daysOfWeek      Int[]        @default([1, 2, 3, 4, 5])
+  schoolLatitude  Float?
+  schoolLongitude Float?
+  serviceRuns     ServiceRun[]
+}
+
+model VehicleLocation {
+  vehicleId String   @id
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  latitude  Float
+  longitude Float
+  accuracy  Float?
+  heading   Float?
+  speed     Float?
+  updatedAt DateTime @updatedAt
+}
+
+model ServiceRun {
+  id                     String                  @id @default(uuid())
+  companyId              String
+  vehicleId              String
+  driverId               String
+  routeId                String?
+  charterTripId          String?
+  purpose                VehiclePurpose
+  status                 ServiceRunStatus        @default(PLANNED)
+  startedAt              DateTime?
+  endedAt                DateTime?
+  createdAt              DateTime                @default(now())
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicle                Vehicle                 @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  driver                 Driver                  @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  route                  SchoolRoute?            @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  charterTrip            CharterTrip?            @relation(fields: [charterTripId], references: [id], onDelete: SetNull)
+  assignments            StudentRunAssignment[]
+  attendances            StudentAttendance[]
+  emergencies            EmergencyRequest[]
+  replacementEmergencies EmergencyRequest[]      @relation("ReplacementRun")
+  locationSamples        VehicleLocationSample[]
+  alerts                 VehicleAlert[]
+  inspections            VehicleInspection[]
+
+  @@index([companyId, status])
+  @@index([driverId, status])
+}
+
+model StudentRunAssignment {
+  id                String     @id @default(uuid())
+  serviceRunId      String
+  studentId         String
+  assignedVehicleId String
+  temporary         Boolean    @default(false)
+  serviceRun        ServiceRun @relation(fields: [serviceRunId], references: [id], onDelete: Cascade)
+  student           Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  assignedVehicle   Vehicle    @relation(fields: [assignedVehicleId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceRunId, studentId])
+  @@index([assignedVehicleId, serviceRunId])
+}
+
+model EmergencyRequest {
+  id               String           @id @default(uuid())
+  companyId        String
+  serviceRunId     String
+  replacementRunId String?
+  brokenVehicleId  String
+  studentId        String
+  description      String
+  status           EmergencyStatus  @default(OPEN)
+  createdAt        DateTime         @default(now())
+  resolvedAt       DateTime?
+  serviceRun       ServiceRun       @relation(fields: [serviceRunId], references: [id], onDelete: Cascade)
+  replacementRun   ServiceRun?      @relation("ReplacementRun", fields: [replacementRunId], references: [id], onDelete: SetNull)
+  brokenVehicle    Vehicle          @relation("BrokenVehicle", fields: [brokenVehicleId], references: [id], onDelete: Cascade)
+  company          Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  student          Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  offers           EmergencyOffer[]
+
+  @@index([companyId, status])
+}
+
+model EmergencyOffer {
+  id             String               @id @default(uuid())
+  requestId      String
+  vehicleId      String
+  distanceMeters Float?
+  status         EmergencyOfferStatus @default(PENDING)
+  createdAt      DateTime             @default(now())
+  respondedAt    DateTime?
+  request        EmergencyRequest     @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  vehicle        Vehicle              @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, vehicleId])
+  @@index([vehicleId, status])
+}
+
+// ==========================================
+// MÓDULO 2: TURISMO E EVENTOS (Fretamento)
+// ==========================================
+
+model CharterTrip {
+  id        String  @id @default(uuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicleId String
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  driverId  String?
+  driver    Driver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+
+  type          VehiclePurpose // TURISMO ou EVENTOS
+  clientName    String // Quem contratou
+  clientDoc     String? // CPF ou CNPJ do contratante
+  clientPhone   String
+  origin        String
+  destination   String
+  departureDate DateTime
+  returnDate    DateTime
+  agreedValue   Decimal                @db.Decimal(10, 2) // Valor cobrado pelo serviço
+  notes         String? // Roteiro, briefing do evento, observações
+  status        TripStatus             @default(AGENDADO)
+  serviceRuns   ServiceRun[]
+  passengers    CharterPassenger[]
+  transactions  FinancialTransaction[]
+
+  createdAt DateTime @default(now())
+}
+
+model DriverInvite {
+  id         String    @id @default(uuid())
+  companyId  String
+  driverId   String
+  codeHash   String    @unique
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  driver     Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, expiresAt])
+}
+
+model StudentTrackingGrant {
+  id        String    @id @default(uuid())
+  studentId String
+  codeHash  String    @unique
+  consentAt DateTime
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  student   Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, expiresAt])
+}
+
+model CharterPassenger {
+  id            String          @id @default(uuid())
+  charterTripId String
+  name          String
+  phone         String?
+  pickupPoint   String?
+  notes         String?
+  status        PassengerStatus @default(AGUARDANDO)
+  boardedAt     DateTime?
+  droppedAt     DateTime?
+  createdAt     DateTime        @default(now())
+  charterTrip   CharterTrip     @relation(fields: [charterTripId], references: [id], onDelete: Cascade)
+
+  @@index([charterTripId, status])
+}
+
+model VehicleDocument {
+  id        String   @id @default(uuid())
+  vehicleId String
+  name      String
+  category  String
+  expiresAt DateTime
+  notes     String?
+  createdAt DateTime @default(now())
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, expiresAt])
+}
+
+model VehicleInspection {
+  id            String      @id @default(uuid())
+  vehicleId     String
+  driverId      String
+  serviceRunId  String?
+  tiresOk       Boolean
+  lightsOk      Boolean
+  brakesOk      Boolean
+  documentsOk   Boolean
+  cleanlinessOk Boolean
+  notes         String?
+  blocked       Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  vehicle       Vehicle     @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  driver        Driver      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  serviceRun    ServiceRun? @relation(fields: [serviceRunId], references: [id], onDelete: SetNull)
+
+  @@index([vehicleId, createdAt])
+}
+
+model VehicleLocationSample {
+  id           String     @id @default(uuid())
+  vehicleId    String
+  serviceRunId String
+  latitude     Float
+  longitude    Float
+  heading      Float?
+  speed        Float?
+  createdAt    DateTime   @default(now())
+  vehicle      Vehicle    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  serviceRun   ServiceRun @relation(fields: [serviceRunId], references: [id], onDelete: Cascade)
+
+  @@index([serviceRunId, createdAt])
+  @@index([createdAt])
+}
+
+model VehicleAlert {
+  id             String     @id @default(uuid())
+  companyId      String
+  serviceRunId   String
+  vehicleId      String
+  kind           String
+  message        String
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+  createdAt      DateTime   @default(now())
+  company        Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  serviceRun     ServiceRun @relation(fields: [serviceRunId], references: [id], onDelete: Cascade)
+  vehicle        Vehicle    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, acknowledgedAt, createdAt])
+  @@index([serviceRunId, kind, createdAt])
+}
+
+// ==========================================
+// MÓDULO 3: FINANCEIRO (Lucro e Custos)
+// ==========================================
+
+model FinancialTransaction {
+  id            String       @id @default(uuid())
+  companyId     String
+  company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicleId     String? // Opcional caso seja um custo geral da empresa (ex: Contador)
+  vehicle       Vehicle?     @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  charterTripId String?
+  charterTrip   CharterTrip? @relation(fields: [charterTripId], references: [id], onDelete: SetNull)
+
+  type        TransactionType // RECEITA ou DESPESA
+  category    String // Ex: "MENSALIDADE_ESCOLAR", "FRETAMENTO", "COMBUSTIVEL", "OFICINA"
+  amount      Decimal           @db.Decimal(10, 2)
+  description String?
+  date        DateTime          @default(now())
+  receipt     FinancialReceipt?
+}
+
+model FinancialReceipt {
+  id            String               @id @default(uuid())
+  transactionId String               @unique
+  transaction   FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  fileName      String
+  mimeType      String
+  sizeBytes     Int
+  data          Bytes
+  createdAt     DateTime             @default(now())
+}

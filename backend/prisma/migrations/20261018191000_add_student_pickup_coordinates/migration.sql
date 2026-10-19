@@ -1,0 +1,3 @@
+ALTER TABLE "Student"
+ADD COLUMN "pickupLatitude" DOUBLE PRECISION,
+ADD COLUMN "pickupLongitude" DOUBLE PRECISION;
