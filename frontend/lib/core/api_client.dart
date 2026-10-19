@@ -16,23 +16,14 @@ class ApiException implements Exception {
 
 class ApiClient {
   static const _storage = FlutterSecureStorage();
-  static const _configuredBaseUrl = String.fromEnvironment('API_BASE_URL');
 
   String get baseUrl {
-    if (_configuredBaseUrl.isNotEmpty) {
-      final uri = Uri.tryParse(_configuredBaseUrl);
-      if (kReleaseMode &&
-          (uri == null || uri.scheme != 'https' || uri.host.isEmpty)) {
-        throw StateError(
-          'API_BASE_URL deve ser uma URL HTTPS válida na versão de produção.',
-        );
-      }
-      return _configuredBaseUrl;
-    }
+    // Força o aplicativo a usar a sua URL de produção quando compilar o APK
     if (kReleaseMode) {
-      return 'https://van-board.vercel.app';
-      
+      return 'https://van-board-seu-usuario.vercel.app'; // <--- INSIRA A URL DO SEU VERCEL AQUI
     }
+    
+    // Se estiver rodando no emulador ou web para testes locais:
     if (kIsWeb) return 'http://localhost:3333';
     if (defaultTargetPlatform == TargetPlatform.android) {
       return 'http://10.0.2.2:3333';

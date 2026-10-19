@@ -1,18 +1,15 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const http = require('http');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { rateLimit } = require('express-rate-limit');
-const { Server } = require('socket.io');
 const { PrismaClient } = require('@prisma/client');
 const { transactionDateFilter, isValidFinancialReceipt } = require('./financial_validation');
 
 const prisma = new PrismaClient();
 const app = express();
-const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 3333);
 const JWT_SECRET = process.env.JWT_SECRET;
 const TOKEN_TTL = '12h';
@@ -55,9 +52,14 @@ const corsOptions = {
     return callback(new Error('Origem não permitida.'));
   }
 };
-const io = new Server(server, { cors: corsOptions });
+
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
+const io = {
+  to: () => ({ emit: () => {} }),
+  use: () => {},
+  on: () => {}
+};
 
 const loginRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -2655,28 +2657,23 @@ app.use((error, _req, res, _next) => {
       : 'Erro interno. Tente novamente mais tarde.'
   });
 });
+app.get('/cron/monitor-locations', async (req, res) => {
+  try {
+    await monitorActiveRunLocations();
+    await prisma.vehicleLocationSample.deleteMany({
+      where: { createdAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }
+    });
+    res.json({ status: 'Manutenção de rotas e GPS concluída.' });
+  } catch (error) {
+    console.error('Falha na manutenção:', error);
+    res.status(500).json({ error: 'Erro na manutenção' });
+  }
+});
+
 
 module.exports = app;
 
-if (require.main === module) {
-  server.listen(PORT, () => console.log(`API BoardVan disponível na porta ${PORT}`));
-  const locationMaintenanceTimer = setInterval(async () => {
-    try {
-      await monitorActiveRunLocations();
-      await prisma.vehicleLocationSample.deleteMany({
-        where: { createdAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }
-      });
-    } catch (error) {
-      console.error('Falha na manutenção de localização e alertas:', error);
-    }
-  }, 60 * 1000);
-  locationMaintenanceTimer.unref();
 
-  async function shutdown() {
-    clearInterval(locationMaintenanceTimer);
-    await prisma.$disconnect();
-    server.close();
-  }
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+if (process.env.NODE_ENV !== 'production' && require.main === module) {
+  app.listen(PORT, () => console.log(`🚐 API rodando localmente na porta ${PORT}`));
 }
