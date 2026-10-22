@@ -23,19 +23,7 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
   throw new Error('JWT_SECRET precisa estar definido com pelo menos 32 caracteres antes de iniciar a API.');
 }
-if (isProduction && !allowedOrigins.length) {
-  throw new Error('ALLOWED_ORIGINS deve listar as origens HTTPS permitidas em produção.');
-}
-if (isProduction && allowedOrigins.some(origin => {
-  try {
-    const parsed = new URL(origin);
-    return parsed.protocol !== 'https:' || parsed.origin !== origin;
-  } catch {
-    return true;
-  }
-})) {
-  throw new Error('Todas as origens permitidas em produção devem usar HTTPS.');
-}
+
 if (trustProxyHops !== undefined && trustProxyHops !== '') {
   const parsedHops = Number(trustProxyHops);
   if (!Number.isInteger(parsedHops) || parsedHops < 0) {
@@ -45,12 +33,7 @@ if (trustProxyHops !== undefined && trustProxyHops !== '') {
 }
 
 const corsOptions = {
-  origin(origin, callback) {
-    if (!isProduction || !origin || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error('Origem não permitida.'));
-  }
+  origin: '*'
 };
 
 app.use(cors(corsOptions));
