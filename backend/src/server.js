@@ -425,6 +425,76 @@ app.post('/auth/login', loginRateLimit, async (req, res) => {
     return res.status(500).json({ error: 'Não foi possível entrar agora.' });
   }
 });
+app.post('/companies/:companyId/runs/:runId/confirm', authenticate, requireOwner, async (req, res) => {
+  try {
+    if (!(await companyForUser(req.user, req.params.companyId))) {
+      return res.status(404).json({ error: 'Empresa não encontrada.' });
+    }
+    
+    const run = await prisma.serviceRun.findFirst({
+      where: { id: req.params.runId, companyId: req.params.companyId, status: 'AGUARDANDO_RETORNO' }
+    });
+    
+    if (!run) return res.status(404).json({ error: 'Rota não encontrada ou não está aguardando retorno.' });
+    
+    await prisma.$transaction(async tx => {
+      // 1. Finaliza a rota em definitivo
+      const completedRun = await tx.serviceRun.updateMany({
+        where: { id: run.id, status: 'AGUARDANDO_RETORNO' },
+        data: { status: 'COMPLETED' }
+      });
+      if (completedRun.count !== 1) throw new Error('A rota já foi confirmada.');
+      
+      // 2. Se for turismo, encerra o contrato e gera a receita financeira
+      if (run.charterTripId) {
+        const trip = await tx.charterTrip.findUnique({
+          where: { id: run.charterTripId }
+        });
+        if (trip?.status === 'EM_ANDAMENTO') {
+          const completedTrip = await tx.charterTrip.updateMany({
+            where: { id: trip.id, status: 'EM_ANDAMENTO' },
+            data: { status: 'CONCLUIDO' }
+          });
+          if (completedTrip.count === 1 && Number(trip.agreedValue) > 0) {
+            await tx.financialTransaction.create({
+              data: {
+                companyId: run.companyId,
+                vehicleId: run.vehicleId,
+                type: 'RECEITA',
+                category: trip.type === 'EVENTOS' ? 'FRETAMENTO_EVENTO' : 'FRETAMENTO_TURISMO',
+                amount: trip.agreedValue,
+                charterTripId: trip.id,
+                description: `Receita do serviço ${trip.origin} → ${trip.destination}`,
+                date: new Date()
+              }
+            });
+          }
+        }
+      }
+      
+      // 3. Libera a van no sistema para ser usada em novas viagens
+      await tx.vehicle.updateMany({
+        where: { id: run.vehicleId, status: { not: 'DANIFICADA' } },
+        data: { status: 'PARADO' }
+      });
+      
+      // 4. Limpa alertas de GPS perdidos (se houver)
+      await tx.vehicleAlert.updateMany({
+        where: { serviceRunId: run.id, resolvedAt: null },
+        data: { resolvedAt: new Date() }
+      });
+    });
+    
+    io.to(`company:${run.companyId}`).emit('run:ended', { runId: run.id, vehicleId: run.vehicleId });
+    res.json({ status: 'COMPLETED' });
+  } catch (error) {
+    if (error.message.includes('confirmada')) {
+      return res.status(409).json({ error: error.message });
+    }
+    console.error('Falha ao confirmar retorno da van:', error);
+    res.status(400).json({ error: 'Não foi possível confirmar o retorno.' });
+  }
+});
 
 app.post('/companies/:companyId/driver-invitations', authenticate, requireOwner, async (req, res) => {
   try {
@@ -2115,67 +2185,39 @@ app.post('/driver/emergency-offers/:offerId/respond', authenticate, requireActiv
 
 app.post('/driver/runs/:runId/end', authenticate, requireActiveDriver, async (req, res) => {
   if (req.user.role !== 'DRIVER') return res.status(403).json({ error: 'Área exclusiva do motorista.' });
+  
   const run = await prisma.serviceRun.findFirst({
     where: { id: req.params.runId, driverId: req.user.sub, status: 'ACTIVE' }
   });
   if (!run) return res.status(404).json({ error: 'Rota ativa não encontrada.' });
+  
   const unresolved = await prisma.emergencyRequest.count({
     where: { serviceRunId: run.id, status: 'OPEN' }
   });
   if (unresolved) return res.status(409).json({ error: 'Resolva as solicitações de apoio antes de encerrar a rota.' });
+  
   try {
     await prisma.$transaction(async tx => {
-      const completedRun = await tx.serviceRun.updateMany({
+      const updatedRun = await tx.serviceRun.updateMany({
         where: { id: run.id, status: 'ACTIVE' },
-        data: { status: 'COMPLETED', endedAt: new Date() }
+        data: { status: 'AGUARDANDO_RETORNO', endedAt: new Date() }
       });
-      if (completedRun.count !== 1) throw new Error('A rota já foi encerrada.');
-      if (run.charterTripId) {
-        const trip = await tx.charterTrip.findUnique({
-          where: { id: run.charterTripId }
-        });
-        if (trip?.status === 'EM_ANDAMENTO') {
-          const completedTrip = await tx.charterTrip.updateMany({
-            where: { id: trip.id, status: 'EM_ANDAMENTO' },
-            data: { status: 'CONCLUIDO' }
-          });
-          if (completedTrip.count === 1 && Number(trip.agreedValue) > 0) {
-          await tx.financialTransaction.create({
-            data: {
-              companyId: run.companyId,
-              vehicleId: run.vehicleId,
-              type: 'RECEITA',
-              category: trip.type === 'EVENTOS' ? 'FRETAMENTO_EVENTO' : 'FRETAMENTO_TURISMO',
-              amount: trip.agreedValue,
-              charterTripId: trip.id,
-              description: `Receita do serviço ${trip.origin} → ${trip.destination}`,
-              date: new Date()
-            }
-          });
-          }
-        }
-      }
-      await tx.vehicle.updateMany({
-        where: { id: run.vehicleId, status: { not: 'DANIFICADA' } },
-        data: { status: 'PARADO' }
-      });
-      await tx.vehicleAlert.updateMany({
-        where: { serviceRunId: run.id, resolvedAt: null },
-        data: { resolvedAt: new Date() }
-      });
+      if (updatedRun.count !== 1) throw new Error('A rota já foi alterada ou encerrada.');
+      
       await tx.driver.update({
         where: { id: req.user.sub },
         data: { status: 'DISPONIVEL' }
       });
     });
   } catch (error) {
-    if (error.message.includes('já foi encerrada')) {
+    if (error.message.includes('encerrada')) {
       return res.status(409).json({ error: error.message });
     }
     throw error;
   }
-  io.to(`company:${run.companyId}`).emit('run:ended', { runId: run.id, vehicleId: run.vehicleId });
-  res.json({ status: 'COMPLETED' });
+  
+  io.to(`company:${run.companyId}`).emit('run:awaiting_return', { runId: run.id, vehicleId: run.vehicleId });
+  res.json({ status: 'AGUARDANDO_RETORNO' });
 });
 
 app.post('/vehicles/:vehicleId/manual-attendance', authenticate, async (req, res) => {

@@ -1,3 +1,4 @@
+import 'package:board_van/screens/dynamic_vehicle_detail.screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -25,6 +26,8 @@ class _LiveFleetMapScreenState extends State<LiveFleetMapScreen> {
   final _api = ApiClient();
   late final Map<String, Map<String, dynamic>> _vehicles;
   io.Socket? _socket;
+
+  String _filtroStatus = 'TODOS';
 
   @override
   void initState() {
@@ -74,9 +77,14 @@ class _LiveFleetMapScreenState extends State<LiveFleetMapScreen> {
   Widget build(BuildContext context) {
     final locatedVehicles = _vehicles.values.where((vehicle) {
       final location = vehicle['location'];
-      return location is Map &&
+      final hasLocation =
+          location is Map &&
           location['latitude'] is num &&
           location['longitude'] is num;
+      if (!hasLocation) return false;
+      if (_filtroStatus != 'TODOS' && vehicle['status'] != _filtroStatus)
+        return false;
+      return true;
     }).toList();
     final center = locatedVehicles.isNotEmpty
         ? LatLng(
@@ -86,7 +94,36 @@ class _LiveFleetMapScreenState extends State<LiveFleetMapScreen> {
         : const LatLng(-10.184, -48.333);
 
     return Scaffold(
-      appBar: AppBar(title: Text('${widget.companyName} • Frota ao vivo')),
+      appBar: AppBar(
+        title: Text('${widget.companyName} • Frota ao vivo'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16.0),
+            child: DropdownButton<String>(
+              value: _filtroStatus,
+              dropdownColor: Theme.of(context).colorScheme.surface,
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(value: 'TODOS', child: Text('Todas as vans')),
+                DropdownMenuItem(value: 'RODANDO', child: Text('🟢 Em rota')),
+                DropdownMenuItem(value: 'PARADO', child: Text('🔵 Paradas')),
+                DropdownMenuItem(
+                  value: 'MANUTENCAO',
+                  child: Text('🟠 Oficina'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    _filtroStatus = value;
+                  });
+                }
+              },
+            ),
+          ),
+        ],
+      ),
+
       body: Column(
         children: [
           Expanded(
@@ -107,28 +144,77 @@ class _LiveFleetMapScreenState extends State<LiveFleetMapScreen> {
                       ),
                       width: 120,
                       height: 60,
-                      child: Column(
-                        children: [
-                          const Icon(
-                            Icons.directions_bus,
-                            color: Colors.indigo,
-                            size: 30,
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 2,
-                            ),
-                            color: Colors.white.withValues(alpha: 0.9),
-                            child: Text(
-                              vehicle['plate'].toString(),
-                              style: const TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
+                      child: GestureDetector(
+                        onTap: () {
+                          showModalBottomSheet(
+                            context: context,
+                            builder: (ctx) => Padding(
+                              padding: const EdgeInsets.all(20.0),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${vehicle['plate']} • ${vehicle['model']}',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Motorista: ${vehicle['defaultDriver']?['name'] ?? 'Nenhum'}',
+                                  ),
+                                  Text('Estado: ${vehicle['status']}'),
+                                  const SizedBox(height: 20),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: FilledButton(
+                                      onPressed: () {
+                                        Navigator.pop(ctx);
+                                        // Certifique-se de importar o ecrã DynamicVehicleDetailScreen no topo do ficheiro
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                DynamicVehicleDetailScreen(
+                                                  vehicleId: vehicle['id']
+                                                      .toString(),
+                                                ),
+                                          ),
+                                        );
+                                      },
+                                      child: const Text('Ver detalhes da van'),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                          ),
-                        ],
+                          );
+                        },
+                        child: Column(
+                          children: [
+                            const Icon(
+                              Icons.directions_bus,
+                              color: Colors.indigo,
+                              size: 30,
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                                vertical: 2,
+                              ),
+                              color: Colors.white.withValues(alpha: 0.9),
+                              child: Text(
+                                vehicle['plate'].toString(),
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     );
                   }).toList(),

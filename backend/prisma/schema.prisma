@@ -18,6 +18,7 @@ enum TripDirection {
   IDA_E_VOLTA // Foi e voltou no dia (2 viagens)
 }
 
+
 enum CheckInMethod {
   QRCODE
   MANUAL_MOTORISTA
@@ -70,6 +71,7 @@ enum TripStatus {
 enum ServiceRunStatus {
   PLANNED
   ACTIVE
+  AGUARDANDO_RETORNO
   COMPLETED
   CANCELLED
 }

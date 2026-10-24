@@ -309,25 +309,31 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Encerrar rota?'),
-        content: const Text('A localização ao vivo será interrompida.'),
+        title: const Text('Finalizar rota?'),
+        content: const Text(
+          'A localização ao vivo será interrompida e a garagem precisará '
+          'confirmar o retorno da van para liberar novas viagens.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Continuar rota'),
+            child: const Text('Cancelar'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Encerrar'),
+            child: const Text('Bater ponto e encerrar'),
           ),
         ],
       ),
     );
     if (confirmed != true) return;
+    
     try {
       await _api.post('/driver/runs/${run['id']}/end');
+      // O rastreamento de GPS é interrompido imediatamente aqui
       await _stopTracking();
       await _load();
+      _showMessage('Rota finalizada. Aguardando a garagem confirmar o retorno.');
     } catch (error) {
       _showMessage(error.toString());
     }
